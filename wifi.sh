@@ -15,14 +15,24 @@ PING_TARGET="8.8.8.8"
 # --- [ Functions ] ---
 
 check_dependencies() {
-    echo "[*] Checking dependencies..."
-    for pkg in "${REQUIRED_PKG[@]}"; do
-        if ! command -v "$pkg" > /dev/null 2>&1; then
-            echo "[!] Error: '$pkg' not found. Install it via USB tethering first."
+    echo "[*] Verifying tool paths..."
+    local TOOLS=("iwctl" "dhcpcd" "ip")
+    
+    for tool in "${TOOLS[@]}"; do
+        # 1. 일반적인 command -v 체크
+        # 2. 실패 시 /usr/bin, /usr/sbin, /bin, /sbin 직접 뒤지기
+        if ! command -v "$tool" > /dev/null 2>&1 && \
+           ! [ -f "/usr/bin/$tool" ] && \
+           ! [ -f "/usr/sbin/$tool" ] && \
+           ! [ -f "/sbin/$tool" ]; then
+            echo "[!] Error: '$tool' not found in standard paths."
+            echo "    Current PATH: $PATH"
             exit 1
         fi
     done
+    echo "[+] All tools found."
 }
+
 
 get_wifi_interface() {
     # Detects interface starting with 'w' (e.g., wlan0, wlp2s0)
