@@ -48,7 +48,7 @@ ensure_service() {
     local service=$1
     if ! systemctl is-active --quiet "$service"; then
         echo "[*] Starting $service..."
-        sudo systemctl start "$service" || { echo "[!] Failed to start $service"; exit 1; }
+         systemctl start "$service" || { echo "[!] Failed to start $service"; exit 1; }
     fi
 }
 
@@ -67,7 +67,7 @@ echo -e "\n"
 
 # Connection Process
 ensure_service "iwd"
-sudo ip link set "$WLAN_IFACE" up
+ ip link set "$WLAN_IFACE" up
 
 echo "[*] Connecting to '$SSID'..."
 if ! iwctl --passphrase "$PASSWORD" station "$WLAN_IFACE" connect "$SSID"; then
@@ -75,7 +75,7 @@ if ! iwctl --passphrase "$PASSWORD" station "$WLAN_IFACE" connect "$SSID"; then
 
 # =================================================================
 # Script: setup_wifi.sh (Root Only / TTY Optimized)
-# Description: Automated WiFi setup without sudo for root shell
+# Description: Automated WiFi setup without  for root shell
 # =================================================================
 
 # 1. 루트 권한 체크
