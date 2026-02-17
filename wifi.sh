@@ -338,31 +338,120 @@ $IP_CMD link set "$WLAN_IFACE" up
 
 echo "[*] Connecting to '$SSID'..."
 # iwctl을 사용하여 연결 시도
+#!/bin/bash
+
+# =================================================================
+# Script: setup_wifi.sh (Root Only / TTY Optimized)
+# Description: Automated WiFi setup for Minimal Installs
+# =================================================================
+
+# 1. 루트 권한 체크
+if [ "$EUID" -ne 0 ]; then
+    echo "[!] Error: Please run this script as root."
+    exit 1
+fi
+
+# 에러 발생 시 즉시 중단
+set -e
+
+# --- [ Settings ] ---
+LOG_FILE="/tmp/wifi_setup.log"
+PING_TARGET="8.8.8.8"
+
+# --- [ Functions ] ---
+
+# 도구 존재 여부 확인 및 경로 반환
+get_tool_path() {
+    local tool=$1
+    local path
+    path=$(command -v "$tool" 2>/dev/null || which "$tool" 2>/dev/null || echo "")
+    
+    if [ -z "$path" ]; then
+        # 표준 경로 직접 검색
+        for p in "/usr/bin/$tool" "/usr/sbin/$tool" "/sbin/$tool" "/bin/$tool"; do
+            if [ -f "$p" ]; then path=$p; break; fi
+        done
+    fi
+
+    if [ -z "$path" ]; then
+        echo "[!] Error: Tool '$tool' not found. Please install it first."
+        exit 1
+    fi
+    echo "$path"
+}
+
+get_wifi_interface() {
+    # w로 시작하는 무선 인터페이스 감지
+    local iface
+    iface=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^w' | head -n 1)
+    if [ -z "$iface" ]; then
+        echo "[!] Error: No wireless interface detected."
+        exit 1
+    fi
+    echo "$iface"
+}
+
+ensure_service() {
+    local service=$1
+    echo "[*] Ensuring $service is running..."
+    systemctl unmask "$service" >/dev/null 2>&1 || true
+    systemctl start "$service" || { echo "[!] Failed to start $service"; exit 1; }
+}
+
+# --- [ Main Logic ] ---
+
+echo "------------------------------------------------"
+echo "  WiFi Setup Tool (Minimal/TTY)"
+echo "------------------------------------------------"
+
+# 필수 도구 경로 확보 (Shellcheck 권장 사항: 절대 경로 변수화)
+IWCTL=$(get_tool_path "iwctl")
+DHCPCD=$(get_tool_path "dhcpcd")
+IP_CMD=$(get_tool_path "ip")
+
+WLAN_IFACE=$(get_wifi_interface)
+echo "[+] Detected Interface: $WLAN_IFACE"
+
+# 서비스 활성화
+ensure_service "iwd"
+
+# 사용자 입력
+# shellcheck disable=SC2162
+read -p ">> Enter WiFi SSID: " SSID
+if [ -z "$SSID" ]; then echo "[!] SSID cannot be empty."; exit 1; fi
+
+# shellcheck disable=SC2162
+read -sp ">> Enter Passphrase: " PASSWORD
+echo -e "\n"
+
+# 인터페이스 활성화
+$IP_CMD link set "$WLAN_IFACE" up
+
+echo "[*] Connecting to '$SSID'..."
+# iwd를 사용하여 연결 시도
 if ! $IWCTL --passphrase "$PASSWORD" station "$WLAN_IFACE" connect "$SSID"; then
     echo "[!] Connection Failed: Check SSID/Password or Signal strength."
     exit 1
 fi
 
-# 연결 완료 후 인터페이스 안정화를 위해 잠시 대기
+# 연결 완료 후 인터페이스 안정화를 위해 잠시 대기 (TTY 환경 필수)
 echo "[*] Waiting for link to stabilize (5s)..."
 sleep 5
 
 echo "[*] Requesting IP via DHCP..."
-# 이미 실행 중인 dhcpcd가 있을 경우를 대비해 -n(rebind) 또는 재시작 권장
-# 여기서는 가장 확실한 방식인 '새로 시작'을 위해 기존 프로세스 영향 없이 실행
+# 기존 dhcpcd 프로세스 정리 후 새로 요청
 $DHCPCD -k "$WLAN_IFACE" >/dev/null 2>&1 || true
 if ! $DHCPCD "$WLAN_IFACE"; then
-    echo "[!] DHCP Failed! You might need to check dhcpcd logs."
+    echo "[!] DHCP Failed!"
     exit 1
 fi
 
 # 인터넷 연결 최종 검증
 echo "[*] Verifying internet connectivity..."
-if ping -c 3 -W 5 $PING_TARGET > /dev/null 2>&1; then
+if ping -c 3 -W 5 "$PING_TARGET" > /dev/null 2>&1; then
     echo "[+] SUCCESS: Internet connection established!"
 else
     echo "[!] Physical link is UP, but cannot reach $PING_TARGET."
-    echo "[?] Hint: Check your DNS (/etc/resolv.conf) or Gateway."
     exit 1
 fi
 
@@ -370,5 +459,8 @@ fi
 echo "------------------------------------------------"
 echo "Connection Summary:"
 $IP_CMD -4 addr show "$WLAN_IFACE" | grep inet || echo "No IP assigned"
+echo "------------------------------------------------"
+echo "Done."
+CMD -4 addr show "$WLAN_IFACE" | grep inet || echo "No IP assigned"
 echo "------------------------------------------------"
 echo "Done. Happy Browsing!"
