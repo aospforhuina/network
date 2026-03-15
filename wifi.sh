@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 1. Root Check
 if [ "$EUID" -ne 0 ]; then
     echo "[!] Error: Must be run as root."
     exit 1
@@ -8,86 +7,53 @@ fi
 
 set -e
 
-# --- [ Settings ] ---
-DHCP_CONF="/etc/dhcpcd.conf"
-INT_CONF="/etc/network/interfaces"
-PING_TARGET="8.8.8.8"
-
-# --- [ 1. Search for Wireless Interface ] ---
-WLAN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^w' | head -n 1)
-
-if [ -z "$WLAN_IFACE" ]; then
-    echo "------------------------------------------------"
-    echo "[FAILED] No wireless interface detected."
-    echo "Please check your WiFi driver or hardware."
-    echo "------------------------------------------------"
+# --- [ 함수: 네트워크 초기화 ] ---
+reset_network() {
+    echo "[!] Critical Error: Routing failed. Resetting network configurations..."
+    # 1. 모든 WiFi 연결 삭제
+    nmcli -g connection.id connection show --active | grep -E '^predefined-ssid' | xargs -I {} nmcli connection delete {}
+    # 2. 라우팅 로그 저장
+    ip route > route.txt
+    echo "[*] Current routing table saved to route.txt"
+    # 3. 네트워크 매니저 재시작
+    systemctl restart NetworkManager
+    echo "[*] NetworkManager restarted. Please run script again."
     exit 1
-fi
+}
 
-echo "[*] Found Wireless Interface: $WLAN_IFACE"
+# --- [ 1. Setup ] ---
+systemctl enable NetworkManager >/dev/null 2>&1
+systemctl start NetworkManager
 
-# --- [ 2. Permanent Config Setup ] ---
-echo "[*] Optimizing system for persistent connection..."
-systemctl enable iwd >/dev/null 2>&1
-systemctl enable dhcpcd >/dev/null 2>&1
+# --- [ 2. WiFi Interface ] ---
+WLAN_IFACE=$(nmcli -t -f DEVICE,TYPE device | grep ":wifi" | cut -d: -f1 | head -n 1)
+[ -z "$WLAN_IFACE" ] && { echo "[!] No wifi device."; exit 1; }
 
-# Fix dhcpcd.conf (Metric priority)
-sed -i '/# Added by setup_wifi/,/nogateway/d' "$DHCP_CONF"
-cat <<EOF >> "$DHCP_CONF"
-
-# Added by setup_wifi
-interface $WLAN_IFACE
-    metric 10
-interface vmbr0
-    nogateway
-EOF
-
-# Comment out interfering gateways
-if [ -f "$INT_CONF" ]; then
-    sed -i 's/^\s*gateway/# gateway/g' "$INT_CONF"
-fi
-
-# --- [ 3. WiFi Connection ] ---
-systemctl start iwd
-echo "[*] Scanning for networks on $WLAN_IFACE..."
-iwctl station "$WLAN_IFACE" scan
-sleep 2
-iwctl station "$WLAN_IFACE" get-networks
-echo "------------------------------------------------"
-
+# --- [ 3. Connection ] ---
 read -r -p ">> Enter SSID: " SSID
 read -r -sp ">> Enter Passphrase: " PASSWORD
 echo -e "\n"
 
+# 기존에 같은 이름의 연결이 있다면 삭제하고 새로 생성
+nmcli connection delete "predefined-ssid-$SSID" >/dev/null 2>&1 || true
+
 echo "[*] Connecting to '$SSID'..."
-if ! iwctl --passphrase "$PASSWORD" station "$WLAN_IFACE" connect "$SSID"; then
-    echo "------------------------------------------------"
-    echo "[FAILED] Connection error. Check SSID/Password."
-    echo "------------------------------------------------"
-    exit 1
+nmcli device wifi connect "$SSID" password "$PASSWORD" ifname "$WLAN_IFACE"
+nmcli connection modify "predefined-ssid-$SSID" ipv4.route-metric 10
+
+# 브리지 설정
+if nmcli connection show vmbr0 >/dev/null 2>&1; then
+    nmcli connection modify vmbr0 ipv4.never-default yes
+    nmcli connection up vmbr0
 fi
 
-# --- [ 4. IP Assignment & Routing Fix ] ---
-echo "[*] Requesting IP and clearing bridge routes..."
-ip route del default dev vmbr0 2>/dev/null || true
-systemctl restart dhcpcd
-
-# Wait for stabilization
-echo "[*] Verifying connection..."
+# --- [ 4. Routing Validation ] ---
+echo "[*] Verifying connectivity..."
 sleep 5
 
-# --- [ 5. Final Ping Test & Workflow Logic ] ---
-if ping -c 2 -W 5 "$PING_TARGET" > /dev/null 2>&1; then
-    echo "------------------------------------------------"
-    echo "[SUCCESS] Internet is working!"
-    echo "System will REBOOT in 5 seconds to apply all changes."
-    echo "------------------------------------------------"
-    sleep 5
-    reboot
+# 핑 테스트 실패 시 바로 reset_network 호출
+if ! ping -c 2 -W 5 8.8.8.8 > /dev/null 2>&1; then
+    reset_network
 else
-    echo "------------------------------------------------"
-    echo "[FAILED] WiFi connected, but Ping to $PING_TARGET failed."
-    echo "Possible routing issue or DNS problem."
-    echo "------------------------------------------------"
-    exit 1
+    echo "[SUCCESS] Internet is active."
 fi
